@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xenbyte/asterisk/internal/analysis"
+	"github.com/xenbyte/Asterisk/internal/analysis"
 )
 
 func bookSetReply(title, author string) string {

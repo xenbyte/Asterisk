@@ -67,16 +67,17 @@ go run ./cmd/bot
 
 ## Publishing to GitHub
 
-1. Create a new empty repository (for example `asterisk`) under your GitHub organization or user.
-2. If this directory is not yet a Git repository: `git init` and `git branch -M main`.
-3. Add the remote and push:
+The canonical remote is [github.com/xenbyte/Asterisk](https://github.com/xenbyte/Asterisk). The Go module path is `github.com/xenbyte/Asterisk` (matches repo casing).
+
+If you cloned without a remote, or need to add it:
 
 ```bash
-git remote add origin https://github.com/YOUR_ORG/asterisk.git
+git remote add origin git@github.com:xenbyte/Asterisk.git
+git branch -M main
 git push -u origin main
 ```
 
-Replace `YOUR_ORG` and the repository URL with your actual remote. If your Go module path should differ from `github.com/xenbyte/asterisk`, update `go.mod` and import paths under `internal/` and `cmd/` to match.
+If `origin` already exists with a different URL, run `git remote set-url origin git@github.com:xenbyte/Asterisk.git` then push.
 
 Never commit `.env`; it is listed in `.gitignore`.
 

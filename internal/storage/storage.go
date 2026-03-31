@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xenbyte/asterisk/internal/analysis"
+	"github.com/xenbyte/Asterisk/internal/analysis"
 	"go.etcd.io/bbolt"
 )
 

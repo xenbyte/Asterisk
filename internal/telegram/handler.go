@@ -5,8 +5,8 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/xenbyte/asterisk/internal/claude"
-	"github.com/xenbyte/asterisk/internal/storage"
+	"github.com/xenbyte/Asterisk/internal/claude"
+	"github.com/xenbyte/Asterisk/internal/storage"
 )
 
 type Handler struct {

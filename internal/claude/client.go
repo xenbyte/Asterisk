@@ -6,7 +6,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
-	"github.com/xenbyte/asterisk/internal/analysis"
+	"github.com/xenbyte/Asterisk/internal/analysis"
 )
 
 type ImageInput struct {
