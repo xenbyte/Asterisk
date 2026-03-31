@@ -68,18 +68,17 @@ go run ./cmd/bot
 ## Publishing to GitHub
 
 1. Create a new empty repository (for example `asterisk`) under your GitHub organization or user.
-2. From this project directory:
+2. If this directory is not yet a Git repository: `git init` and `git branch -M main`.
+3. Add the remote and push:
 
 ```bash
-git init
-git add .
-git commit -m "Initial commit: Asterisk Telegram reading assistant"
-git branch -M main
 git remote add origin https://github.com/YOUR_ORG/asterisk.git
 git push -u origin main
 ```
 
-Replace `YOUR_ORG` and the repository URL with your actual remote. Never commit `.env`; it is listed in `.gitignore`.
+Replace `YOUR_ORG` and the repository URL with your actual remote. If your Go module path should differ from `github.com/xenbyte/asterisk`, update `go.mod` and import paths under `internal/` and `cmd/` to match.
+
+Never commit `.env`; it is listed in `.gitignore`.
 
 ## Production notes
 
