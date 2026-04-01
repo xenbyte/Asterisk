@@ -19,7 +19,7 @@ func (h *Handler) handleCallback(cq *tgbotapi.CallbackQuery) {
 	msgID := cq.Message.MessageID
 	key := storage.CallbackKey(chatID, msgID)
 
-	resp, err := h.storage.GetCallback(key)
+	resp, err := h.storage.GetCallbackLegacy(key)
 	if err != nil {
 		h.logger.Error("failed to get callback data", "error", err, "key", key)
 		h.reply(chatID, callbackExpiredReply)

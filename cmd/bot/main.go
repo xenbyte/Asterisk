@@ -1,16 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strconv"
 	"syscall"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/joho/godotenv"
+	"github.com/xenbyte/Asterisk/internal/admin"
 	"github.com/xenbyte/Asterisk/internal/claude"
 	"github.com/xenbyte/Asterisk/internal/storage"
 	"github.com/xenbyte/Asterisk/internal/telegram"
@@ -27,13 +27,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	db, err := storage.Open(cfg.dbPath)
+	ctx := context.Background()
+
+	db, err := storage.New(ctx, cfg.databaseURL)
 	if err != nil {
-		logger.Error("failed to open database", "error", err, "path", cfg.dbPath)
+		logger.Error("failed to open database", "error", err)
 		os.Exit(1)
 	}
 	defer db.Close()
-	logger.Info("database opened", "path", cfg.dbPath)
+	logger.Info("database connected")
 
 	bot, err := tgbotapi.NewBotAPI(cfg.telegramToken)
 	if err != nil {
@@ -44,13 +46,21 @@ func main() {
 
 	claudeClient := claude.NewClient(cfg.anthropicKey)
 
-	handler := telegram.NewHandler(bot, claudeClient, db, cfg.allowedUserID, logger)
+	handler := telegram.NewHandler(bot, claudeClient, db, logger)
+
+	adminSrv := admin.New(db, cfg.adminToken, cfg.adminPort)
+	go func() {
+		logger.Info("starting admin API", "port", cfg.adminPort)
+		if err := adminSrv.Start(); err != nil {
+			logger.Error("admin API error", "error", err)
+		}
+	}()
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
 
-	logger.Info("bot started, listening for updates", "allowed_user_id", cfg.allowedUserID)
+	logger.Info("bot started, listening for updates")
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -71,8 +81,9 @@ func main() {
 type config struct {
 	telegramToken string
 	anthropicKey  string
-	allowedUserID int64
-	dbPath        string
+	databaseURL   string
+	adminToken    string
+	adminPort     string
 }
 
 func loadConfig() (*config, error) {
@@ -86,27 +97,26 @@ func loadConfig() (*config, error) {
 		return nil, fmt.Errorf("ANTHROPIC_API_KEY is required")
 	}
 
-	userIDStr := os.Getenv("TELEGRAM_ALLOWED_USER_ID")
-	if userIDStr == "" {
-		return nil, fmt.Errorf("TELEGRAM_ALLOWED_USER_ID is required")
-	}
-	userID, err := strconv.ParseInt(userIDStr, 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("TELEGRAM_ALLOWED_USER_ID must be an integer: %w", err)
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		return nil, fmt.Errorf("DATABASE_URL is required")
 	}
 
-	dataDir := os.Getenv("DATA_DIR")
-	if dataDir == "" {
-		dataDir = "./data"
+	adminToken := os.Getenv("ADMIN_TOKEN")
+	if adminToken == "" {
+		return nil, fmt.Errorf("ADMIN_TOKEN is required")
 	}
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		return nil, fmt.Errorf("creating data directory: %w", err)
+
+	adminPort := os.Getenv("ADMIN_PORT")
+	if adminPort == "" {
+		adminPort = "8080"
 	}
 
 	return &config{
 		telegramToken: token,
 		anthropicKey:  apiKey,
-		allowedUserID: userID,
-		dbPath:        filepath.Join(dataDir, "asterisk.db"),
+		databaseURL:   databaseURL,
+		adminToken:    adminToken,
+		adminPort:     adminPort,
 	}, nil
 }
