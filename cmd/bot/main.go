@@ -6,11 +6,11 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/joho/godotenv"
-	"github.com/xenbyte/Asterisk/internal/admin"
 	"github.com/xenbyte/Asterisk/internal/claude"
 	"github.com/xenbyte/Asterisk/internal/storage"
 	"github.com/xenbyte/Asterisk/internal/telegram"
@@ -46,15 +46,7 @@ func main() {
 
 	claudeClient := claude.NewClient(cfg.anthropicKey)
 
-	handler := telegram.NewHandler(bot, claudeClient, db, logger)
-
-	adminSrv := admin.New(db, cfg.adminToken, cfg.adminPort)
-	go func() {
-		logger.Info("starting admin API", "port", cfg.adminPort)
-		if err := adminSrv.Start(); err != nil {
-			logger.Error("admin API error", "error", err)
-		}
-	}()
+	handler := telegram.NewHandler(bot, claudeClient, db, logger, cfg.adminTelegramID)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -79,11 +71,10 @@ func main() {
 }
 
 type config struct {
-	telegramToken string
-	anthropicKey  string
-	databaseURL   string
-	adminToken    string
-	adminPort     string
+	telegramToken   string
+	anthropicKey    string
+	databaseURL     string
+	adminTelegramID int64
 }
 
 func loadConfig() (*config, error) {
@@ -102,21 +93,19 @@ func loadConfig() (*config, error) {
 		return nil, fmt.Errorf("DATABASE_URL is required")
 	}
 
-	adminToken := os.Getenv("ADMIN_TOKEN")
-	if adminToken == "" {
-		return nil, fmt.Errorf("ADMIN_TOKEN is required")
+	adminIDStr := os.Getenv("ADMIN_TELEGRAM_ID")
+	if adminIDStr == "" {
+		return nil, fmt.Errorf("ADMIN_TELEGRAM_ID is required")
 	}
-
-	adminPort := os.Getenv("ADMIN_PORT")
-	if adminPort == "" {
-		adminPort = "8080"
+	adminID, err := strconv.ParseInt(adminIDStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("ADMIN_TELEGRAM_ID must be a valid integer: %w", err)
 	}
 
 	return &config{
-		telegramToken: token,
-		anthropicKey:  apiKey,
-		databaseURL:   databaseURL,
-		adminToken:    adminToken,
-		adminPort:     adminPort,
+		telegramToken:   token,
+		anthropicKey:    apiKey,
+		databaseURL:     databaseURL,
+		adminTelegramID: adminID,
 	}, nil
 }

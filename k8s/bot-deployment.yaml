@@ -19,9 +19,6 @@ spec:
         - name: bot
           image: ghcr.io/xenbyte/asterisk:latest
           imagePullPolicy: Always
-          ports:
-            - containerPort: 8080
-              name: admin
           env:
             - name: TELEGRAM_BOT_TOKEN
               valueFrom:
@@ -38,19 +35,11 @@ spec:
                 secretKeyRef:
                   name: asterisk-secret
                   key: database-url
-            - name: ADMIN_TOKEN
+            - name: ADMIN_TELEGRAM_ID
               valueFrom:
                 secretKeyRef:
                   name: asterisk-secret
-                  key: admin-token
-            - name: ADMIN_PORT
-              value: "8080"
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 5
-            periodSeconds: 10
+                  key: admin-telegram-id
           resources:
             requests:
               memory: "64Mi"

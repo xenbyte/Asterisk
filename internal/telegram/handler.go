@@ -16,15 +16,17 @@ type Handler struct {
 	storage    *storage.Storage
 	logger     *slog.Logger
 	mediaGroup *mediaGroupBuffer
+	adminID    int64
 }
 
-func NewHandler(bot *tgbotapi.BotAPI, claude *claude.Client, store *storage.Storage, logger *slog.Logger) *Handler {
+func NewHandler(bot *tgbotapi.BotAPI, claude *claude.Client, store *storage.Storage, logger *slog.Logger, adminID int64) *Handler {
 	return &Handler{
 		bot:        bot,
 		claude:     claude,
 		storage:    store,
 		logger:     logger,
 		mediaGroup: newMediaGroupBuffer(1500 * time.Millisecond),
+		adminID:    adminID,
 	}
 }
 
@@ -56,6 +58,12 @@ func (h *Handler) HandleUpdate(update tgbotapi.Update) {
 		h.handleCallback(update.CallbackQuery)
 	case update.Message == nil:
 		return
+	case isAdminCommand(update.Message):
+		if int64(update.Message.From.ID) != h.adminID {
+			// silently ignore — don't reveal admin commands exist
+			return
+		}
+		h.handleAdminCommand(ctx, update.Message)
 	case update.Message.IsCommand():
 		h.handleCommand(update.Message)
 	case len(update.Message.Photo) > 0:
