@@ -10,6 +10,8 @@ import (
 	"github.com/xenbyte/Asterisk/internal/storage"
 )
 
+const defaultDailyLimit = 15
+
 func (h *Handler) handlePhotoGroup(chatID int64, msgs []*tgbotapi.Message) {
 	book, err := h.storage.GetBook(chatID)
 	if err != nil {
@@ -20,6 +22,38 @@ func (h *Handler) handlePhotoGroup(chatID int64, msgs []*tgbotapi.Message) {
 	if book == nil {
 		h.reply(chatID, noBookForPhotoReply)
 		return
+	}
+
+	// Trim to the first 4 photos and notify the user if more were sent.
+	if len(msgs) > 4 {
+		msgs = msgs[:4]
+		h.sendMessage(chatID, "Only the first 4 photos will be analysed per message.")
+	}
+
+	// Enforce rate limit — derive user ID from the first message.
+	var userID int64
+	if len(msgs) > 0 && msgs[0].From != nil {
+		userID = msgs[0].From.ID
+	}
+
+	if userID != 0 {
+		ctx := context.Background()
+		full, err := h.storage.IsFullAccess(ctx, userID)
+		if err != nil {
+			h.logger.Error("failed to check full access", "user_id", userID, "error", err)
+			// proceed without blocking on error
+		} else if !full {
+			count, err := h.storage.GetDailyCount(ctx, userID)
+			if err != nil {
+				h.logger.Error("failed to get daily count", "user_id", userID, "error", err)
+				// proceed without blocking on error
+			} else if count >= defaultDailyLimit {
+				h.sendMessage(chatID, fmt.Sprintf(
+					"You've reached your daily limit of %d analyses. Your quota resets at midnight UTC.", defaultDailyLimit,
+				))
+				return
+			}
+		}
 	}
 
 	var images []claude.ImageInput
@@ -63,6 +97,13 @@ func (h *Handler) handlePhotoGroup(chatID int64, msgs []*tgbotapi.Message) {
 
 	if err := h.storage.StoreAnalysis(chatID, book, resp); err != nil {
 		h.logger.Error("failed to persist analysis", "error", err, "chat_id", chatID)
+	}
+
+	// Increment daily usage counter after a successful analysis.
+	if userID != 0 {
+		if err := h.storage.IncrementDailyCount(context.Background(), userID); err != nil {
+			h.logger.Error("failed to increment daily count", "user_id", userID, "error", err)
+		}
 	}
 
 	sentMsg, err := h.sendSummaryWithButtons(chatID, resp.Summary)

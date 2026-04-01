@@ -7,9 +7,9 @@
 // Commands:
 //
 //	health
-//	users list [--status pending|approved|denied|all]
-//	users approve <telegram_id>
-//	users deny <telegram_id>
+//	users list
+//	users grant <telegram_id>
+//	users revoke <telegram_id>
 //
 // Config precedence:
 //  1. --url / --token flags
@@ -61,29 +61,23 @@ func main() {
 		}
 		switch args[1] {
 		case "list":
-			status := ""
-			// Optional --status flag
-			subFS := flag.NewFlagSet("users list", flag.ExitOnError)
-			statusFlag := subFS.String("status", "", "Filter by status: pending|approved|denied|all")
-			_ = subFS.Parse(args[2:])
-			status = *statusFlag
-			runUsersList(baseURL, token, status)
+			runUsersList(baseURL, token)
 
-		case "approve":
+		case "grant":
 			if len(args) < 3 {
 				fmt.Fprintln(os.Stderr, "Error: missing <telegram_id>")
 				os.Exit(1)
 			}
 			id := mustParseID(args[2])
-			runUserAction(baseURL, token, id, "approve")
+			runUserAction(baseURL, token, id, "grant")
 
-		case "deny":
+		case "revoke":
 			if len(args) < 3 {
 				fmt.Fprintln(os.Stderr, "Error: missing <telegram_id>")
 				os.Exit(1)
 			}
 			id := mustParseID(args[2])
-			runUserAction(baseURL, token, id, "deny")
+			runUserAction(baseURL, token, id, "revoke")
 
 		default:
 			fmt.Fprintf(os.Stderr, "Error: unknown users sub-command %q\n", args[1])
@@ -193,23 +187,20 @@ func runHealth(base, token string) {
 }
 
 type apiUser struct {
-	TelegramID   int64      `json:"telegram_id"`
-	Username     string     `json:"username"`
-	FirstName    string     `json:"first_name"`
-	Status       string     `json:"status"`
-	RegisteredAt time.Time  `json:"registered_at"`
-	ApprovedAt   *time.Time `json:"approved_at"`
+	TelegramID int64     `json:"telegram_id"`
+	Username   string    `json:"username"`
+	FirstName  string    `json:"first_name"`
+	FullAccess bool      `json:"full_access"`
+	FirstSeen  time.Time `json:"first_seen"`
+	DailyCount int       `json:"daily_count"`
 }
 
-func runUsersList(base, token, status string) {
+const defaultDailyLimit = 15
+
+func runUsersList(base, token string) {
 	c := newClient(base, token)
 
-	path := "/users"
-	if status != "" {
-		path += "?status=" + url.QueryEscape(status)
-	}
-
-	resp, err := c.do(http.MethodGet, path)
+	resp, err := c.do(http.MethodGet, "/users")
 	if err != nil {
 		if isConnectionRefused(err) {
 			fmt.Fprintf(os.Stderr, "Error: Could not connect to %s\nMake sure the admin API is reachable (try kubectl port-forward if running in-cluster).\n", base)
@@ -239,18 +230,26 @@ func runUsersList(base, token, status string) {
 
 	// Header
 	fmt.Printf("%-16s %-16s %-16s %-10s %s\n",
-		"ID", "USERNAME", "NAME", "STATUS", "REGISTERED")
+		"ID", "USERNAME", "NAME", "ACCESS", "TODAY")
 	fmt.Println(strings.Repeat("\u2500", 70))
 
 	for _, u := range body.Users {
-		name := u.FirstName
-		registered := u.RegisteredAt.Local().Format("2006-01-02 15:04")
+		access := "limited"
+		if u.FullAccess {
+			access = "full"
+		}
+
+		today := fmt.Sprintf("%d/%d", u.DailyCount, defaultDailyLimit)
+		if u.FullAccess {
+			today = "-"
+		}
+
 		fmt.Printf("%-16d %-16s %-16s %-10s %s\n",
 			u.TelegramID,
 			truncate(u.Username, 16),
-			truncate(name, 16),
-			u.Status,
-			registered,
+			truncate(u.FirstName, 16),
+			access,
+			today,
 		)
 	}
 }
@@ -274,14 +273,19 @@ func runUserAction(base, token string, telegramID int64, action string) {
 		handleHTTPError(resp, fmt.Sprintf("POST %s", path))
 	}
 
-	fmt.Printf("\u2713 User %d %sd.\n", telegramID, action)
+	switch action {
+	case "grant":
+		fmt.Printf("\u2713 Full access granted to user %d.\n", telegramID)
+	case "revoke":
+		fmt.Printf("\u2713 Full access revoked for user %d. Default limit (%d/day) applies.\n", telegramID, defaultDailyLimit)
+	}
 }
 
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max-1] + "…"
+	return s[:max-1] + "\u2026"
 }
 
 func printUsage() {
@@ -290,9 +294,9 @@ func printUsage() {
 
 Commands:
   health
-  users list [--status pending|approved|denied|all]
-  users approve <telegram_id>
-  users deny <telegram_id>
+  users list
+  users grant <telegram_id>
+  users revoke <telegram_id>
 
 Config (precedence: flag > env > default):
   --url    / ASTERISK_URL    Admin API base URL (default: http://localhost:8080)

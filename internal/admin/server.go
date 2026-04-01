@@ -60,23 +60,12 @@ func (srv *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // userJSON is the JSON representation of a user returned by the API.
 type userJSON struct {
-	TelegramID   int64      `json:"telegram_id"`
-	Username     string     `json:"username"`
-	FirstName    string     `json:"first_name"`
-	Status       string     `json:"status"`
-	RegisteredAt time.Time  `json:"registered_at"`
-	ApprovedAt   *time.Time `json:"approved_at"`
-}
-
-func toUserJSON(u storage.User) userJSON {
-	return userJSON{
-		TelegramID:   u.TelegramID,
-		Username:     u.Username,
-		FirstName:    u.FirstName,
-		Status:       u.Status,
-		RegisteredAt: u.RegisteredAt,
-		ApprovedAt:   u.ApprovedAt,
-	}
+	TelegramID int64     `json:"telegram_id"`
+	Username   string    `json:"username"`
+	FirstName  string    `json:"first_name"`
+	FullAccess bool      `json:"full_access"`
+	FirstSeen  time.Time `json:"first_seen"`
+	DailyCount int       `json:"daily_count"`
 }
 
 // handleUsers handles GET /users
@@ -86,12 +75,10 @@ func (srv *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status := r.URL.Query().Get("status")
-
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	users, err := srv.storage.ListUsers(ctx, status)
+	users, err := srv.storage.ListUsersWithCount(ctx)
 	if err != nil {
 		log.Printf("admin: list users error: %v", err)
 		httpError(w, "internal server error", http.StatusInternalServerError)
@@ -100,21 +87,28 @@ func (srv *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 
 	result := make([]userJSON, 0, len(users))
 	for _, u := range users {
-		result = append(result, toUserJSON(u))
+		result = append(result, userJSON{
+			TelegramID: u.TelegramID,
+			Username:   u.Username,
+			FirstName:  u.FirstName,
+			FullAccess: u.FullAccess,
+			FirstSeen:  u.FirstSeen,
+			DailyCount: u.DailyCount,
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"users": result})
 }
 
-// handleUserAction handles POST /users/{id}/approve and POST /users/{id}/deny
+// handleUserAction handles POST /users/{id}/grant and POST /users/{id}/revoke
 func (srv *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Path format: /users/{id}/approve  or  /users/{id}/deny
+	// Path format: /users/{id}/grant  or  /users/{id}/revoke
 	// Strip leading slash and split.
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
 	// parts[0] == "users", parts[1] == id, parts[2] == action
@@ -130,7 +124,7 @@ func (srv *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	action := parts[2]
-	if action != "approve" && action != "deny" {
+	if action != "grant" && action != "revoke" {
 		httpError(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -138,28 +132,24 @@ func (srv *Server) handleUserAction(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	var (
-		newStatus  string
-		approvedAt *time.Time
-	)
-	if action == "approve" {
-		newStatus = "approved"
-		now := time.Now()
-		approvedAt = &now
+	if action == "grant" {
+		if err := srv.storage.GrantFullAccess(ctx, telegramID); err != nil {
+			log.Printf("admin: grant full access error: %v", err)
+			httpError(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 	} else {
-		newStatus = "denied"
-	}
-
-	if err := srv.storage.UpdateUserStatus(ctx, telegramID, newStatus, approvedAt); err != nil {
-		log.Printf("admin: update user status error: %v", err)
-		httpError(w, "internal server error", http.StatusInternalServerError)
-		return
+		if err := srv.storage.RevokeFullAccess(ctx, telegramID); err != nil {
+			log.Printf("admin: revoke full access error: %v", err)
+			httpError(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"telegram_id": telegramID,
-		"status":      newStatus,
+		"action":      action,
 	})
 }
 

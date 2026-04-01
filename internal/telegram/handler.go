@@ -29,23 +29,26 @@ func NewHandler(bot *tgbotapi.BotAPI, claude *claude.Client, store *storage.Stor
 }
 
 func (h *Handler) HandleUpdate(update tgbotapi.Update) {
-	// /register is always allowed — handle before auth check.
-	if update.Message != nil && update.Message.IsCommand() && update.Message.Command() == "register" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		h.handleRegisterCommand(ctx, update.Message)
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if !h.isAuthorized(ctx, update) {
-		// Send access-denied message when there is a message sender to reply to.
-		if update.Message != nil {
-			h.sendMessage(update.Message.Chat.ID, "You don't have access yet. Send /register to request access.")
+	// Lazily register the user on every interaction.
+	var userID int64
+	var username, firstName string
+	switch {
+	case update.Message != nil && update.Message.From != nil:
+		userID = update.Message.From.ID
+		username = update.Message.From.UserName
+		firstName = update.Message.From.FirstName
+	case update.CallbackQuery != nil && update.CallbackQuery.From != nil:
+		userID = update.CallbackQuery.From.ID
+		username = update.CallbackQuery.From.UserName
+		firstName = update.CallbackQuery.From.FirstName
+	}
+	if userID != 0 {
+		if err := h.storage.EnsureUser(ctx, userID, username, firstName); err != nil {
+			h.logger.Error("failed to ensure user", "user_id", userID, "error", err)
 		}
-		return
 	}
 
 	switch {
@@ -62,29 +65,6 @@ func (h *Handler) HandleUpdate(update tgbotapi.Update) {
 			h.handlePhotoGroup(update.Message.Chat.ID, []*tgbotapi.Message{update.Message})
 		}
 	}
-}
-
-func (h *Handler) isAuthorized(ctx context.Context, update tgbotapi.Update) bool {
-	var userID int64
-	switch {
-	case update.CallbackQuery != nil && update.CallbackQuery.From != nil:
-		userID = update.CallbackQuery.From.ID
-	case update.Message != nil && update.Message.From != nil:
-		userID = update.Message.From.ID
-	default:
-		return false
-	}
-
-	approved, err := h.storage.IsUserApproved(ctx, userID)
-	if err != nil {
-		h.logger.Error("failed to check user authorization", "user_id", userID, "error", err)
-		return false
-	}
-	if !approved {
-		h.logger.Warn("unauthorized access attempt", "user_id", userID)
-		return false
-	}
-	return true
 }
 
 // sendMessage sends a plain-text message to a chat.

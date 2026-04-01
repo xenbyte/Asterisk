@@ -29,14 +29,13 @@ type AnalysisRecord struct {
 // AnalysisResponse is an alias kept for compatibility with callback storage.
 type AnalysisResponse = analysis.Response
 
-// User represents a Telegram user registered with the bot.
+// User represents a Telegram user known to the bot.
 type User struct {
-	TelegramID   int64
-	Username     string
-	FirstName    string
-	Status       string     // "pending", "approved", "denied"
-	RegisteredAt time.Time
-	ApprovedAt   *time.Time
+	TelegramID int64
+	Username   string
+	FirstName  string
+	FullAccess bool
+	FirstSeen  time.Time
 }
 
 // Storage wraps a PostgreSQL connection pool.
@@ -68,12 +67,17 @@ func New(ctx context.Context, connStr string) (*Storage, error) {
 func (s *Storage) migrate(ctx context.Context) error {
 	migrations := []string{
 		`CREATE TABLE IF NOT EXISTS users (
-			telegram_id   BIGINT PRIMARY KEY,
-			username      TEXT NOT NULL DEFAULT '',
-			first_name    TEXT NOT NULL DEFAULT '',
-			status        TEXT NOT NULL DEFAULT 'pending',
-			registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			approved_at   TIMESTAMPTZ
+			telegram_id BIGINT PRIMARY KEY,
+			username    TEXT NOT NULL DEFAULT '',
+			first_name  TEXT NOT NULL DEFAULT '',
+			full_access BOOLEAN NOT NULL DEFAULT FALSE,
+			first_seen  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS rate_limits (
+			user_id BIGINT NOT NULL,
+			date    DATE NOT NULL,
+			count   INT NOT NULL DEFAULT 0,
+			PRIMARY KEY (user_id, date)
 		)`,
 		`CREATE TABLE IF NOT EXISTS sessions (
 			chat_id     BIGINT PRIMARY KEY,
@@ -126,56 +130,125 @@ func CallbackKey(chatID int64, messageID int) string {
 
 // --- Users ---
 
-// RegisterUser inserts a new user record. If the user already exists, it is a no-op.
-func (s *Storage) RegisterUser(ctx context.Context, u User) error {
+// EnsureUser upserts a user record on first interaction.
+func (s *Storage) EnsureUser(ctx context.Context, telegramID int64, username, firstName string) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (telegram_id, username, first_name, status, registered_at)
-		 VALUES ($1, $2, $3, $4, NOW())
-		 ON CONFLICT (telegram_id) DO NOTHING`,
-		u.TelegramID, u.Username, u.FirstName, u.Status,
+		`INSERT INTO users(telegram_id, username, first_name) VALUES($1, $2, $3)
+		 ON CONFLICT (telegram_id) DO UPDATE SET username=EXCLUDED.username, first_name=EXCLUDED.first_name`,
+		telegramID, username, firstName,
 	)
 	if err != nil {
-		return fmt.Errorf("registering user: %w", err)
+		return fmt.Errorf("ensuring user: %w", err)
 	}
 	return nil
 }
 
-// GetUser returns a user by Telegram ID. Returns nil, nil if not found.
-func (s *Storage) GetUser(ctx context.Context, telegramID int64) (*User, error) {
+// IsFullAccess returns true if the user has full (unlimited) access.
+func (s *Storage) IsFullAccess(ctx context.Context, telegramID int64) (bool, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT telegram_id, username, first_name, status, registered_at, approved_at
-		 FROM users WHERE telegram_id = $1`,
+		`SELECT full_access FROM users WHERE telegram_id=$1`,
 		telegramID,
 	)
-
-	var u User
-	if err := row.Scan(&u.TelegramID, &u.Username, &u.FirstName, &u.Status, &u.RegisteredAt, &u.ApprovedAt); err != nil {
+	var fullAccess bool
+	if err := row.Scan(&fullAccess); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, nil
+			return false, nil
 		}
-		return nil, fmt.Errorf("getting user: %w", err)
+		return false, fmt.Errorf("checking full access: %w", err)
 	}
-	return &u, nil
+	return fullAccess, nil
 }
 
-// ListUsers returns users filtered by status. Pass "" or "all" to return all users.
-func (s *Storage) ListUsers(ctx context.Context, status string) ([]User, error) {
-	var (
-		rows *sql.Rows
-		err  error
+// GetDailyCount returns how many analyses the user has done today (UTC).
+func (s *Storage) GetDailyCount(ctx context.Context, userID int64) (int, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT count FROM rate_limits WHERE user_id=$1 AND date=CURRENT_DATE`,
+		userID,
 	)
-	if status == "" || status == "all" {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT telegram_id, username, first_name, status, registered_at, approved_at
-			 FROM users ORDER BY registered_at DESC`,
-		)
-	} else {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT telegram_id, username, first_name, status, registered_at, approved_at
-			 FROM users WHERE status = $1 ORDER BY registered_at DESC`,
-			status,
-		)
+	var count int
+	if err := row.Scan(&count); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("getting daily count: %w", err)
 	}
+	return count, nil
+}
+
+// IncrementDailyCount atomically increments (or inserts) the user's count for today.
+func (s *Storage) IncrementDailyCount(ctx context.Context, userID int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO rate_limits(user_id, date, count) VALUES($1, CURRENT_DATE, 1)
+		 ON CONFLICT (user_id, date) DO UPDATE SET count = rate_limits.count + 1`,
+		userID,
+	)
+	if err != nil {
+		return fmt.Errorf("incrementing daily count: %w", err)
+	}
+	return nil
+}
+
+// GrantFullAccess sets full_access=true for a user (upserting the user row if needed).
+func (s *Storage) GrantFullAccess(ctx context.Context, telegramID int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO users(telegram_id, full_access) VALUES($1, true)
+		 ON CONFLICT (telegram_id) DO UPDATE SET full_access=true`,
+		telegramID,
+	)
+	if err != nil {
+		return fmt.Errorf("granting full access: %w", err)
+	}
+	return nil
+}
+
+// RevokeFullAccess sets full_access=false.
+func (s *Storage) RevokeFullAccess(ctx context.Context, telegramID int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE users SET full_access=false WHERE telegram_id=$1`,
+		telegramID,
+	)
+	if err != nil {
+		return fmt.Errorf("revoking full access: %w", err)
+	}
+	return nil
+}
+
+// UserWithCount extends User with today's usage count.
+type UserWithCount struct {
+	User
+	DailyCount int
+}
+
+// ListUsersWithCount returns all known users joined with today's rate limit count.
+func (s *Storage) ListUsersWithCount(ctx context.Context) ([]UserWithCount, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT u.telegram_id, u.username, u.first_name, u.full_access, u.first_seen,
+		        COALESCE(r.count, 0) as daily_count
+		 FROM users u
+		 LEFT JOIN rate_limits r ON r.user_id = u.telegram_id AND r.date = CURRENT_DATE
+		 ORDER BY u.first_seen DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing users with count: %w", err)
+	}
+	defer rows.Close()
+
+	var users []UserWithCount
+	for rows.Next() {
+		var u UserWithCount
+		if err := rows.Scan(&u.TelegramID, &u.Username, &u.FirstName, &u.FullAccess, &u.FirstSeen, &u.DailyCount); err != nil {
+			return nil, fmt.Errorf("scanning user: %w", err)
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+// ListUsers returns all known users.
+func (s *Storage) ListUsers(ctx context.Context) ([]User, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT telegram_id, username, first_name, full_access, first_seen FROM users ORDER BY first_seen DESC`,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("listing users: %w", err)
 	}
@@ -184,7 +257,7 @@ func (s *Storage) ListUsers(ctx context.Context, status string) ([]User, error) 
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.TelegramID, &u.Username, &u.FirstName, &u.Status, &u.RegisteredAt, &u.ApprovedAt); err != nil {
+		if err := rows.Scan(&u.TelegramID, &u.Username, &u.FirstName, &u.FullAccess, &u.FirstSeen); err != nil {
 			return nil, fmt.Errorf("scanning user: %w", err)
 		}
 		users = append(users, u)
@@ -192,28 +265,9 @@ func (s *Storage) ListUsers(ctx context.Context, status string) ([]User, error) 
 	return users, rows.Err()
 }
 
-// UpdateUserStatus updates a user's status and optional approval timestamp.
-func (s *Storage) UpdateUserStatus(ctx context.Context, telegramID int64, status string, approvedAt *time.Time) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE users SET status = $1, approved_at = $2 WHERE telegram_id = $3`,
-		status, approvedAt, telegramID,
-	)
-	if err != nil {
-		return fmt.Errorf("updating user status: %w", err)
-	}
-	return nil
-}
-
-// IsUserApproved returns true if the user exists and has status "approved".
-func (s *Storage) IsUserApproved(ctx context.Context, telegramID int64) (bool, error) {
-	u, err := s.GetUser(ctx, telegramID)
-	if err != nil {
-		return false, err
-	}
-	if u == nil {
-		return false, nil
-	}
-	return u.Status == "approved", nil
+// GetUserDailyCount returns today's count for a user (alias for GetDailyCount).
+func (s *Storage) GetUserDailyCount(ctx context.Context, userID int64) (int, error) {
+	return s.GetDailyCount(ctx, userID)
 }
 
 // --- Sessions ---
