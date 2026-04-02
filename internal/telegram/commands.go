@@ -75,26 +75,15 @@ func (h *Handler) handleStatusCommand(msg *tgbotapi.Message) {
 }
 
 func (h *Handler) handleQuotesCommand(msg *tgbotapi.Message) {
-	book, err := h.storage.GetBook(msg.Chat.ID)
-	if err != nil {
-		h.logger.Error("failed to get book", "error", err, "chat_id", msg.Chat.ID)
-		h.reply(msg.Chat.ID, "Something went wrong. Try again.")
-		return
-	}
-	if book == nil {
-		h.reply(msg.Chat.ID, statusNoBookReply)
-		return
-	}
-
-	quotes, err := h.storage.GetAllQuotes(msg.Chat.ID, book)
+	ctx := context.Background()
+	groups, err := h.storage.GetAllQuotesForChat(ctx, msg.Chat.ID)
 	if err != nil {
 		h.logger.Error("failed to get quotes", "error", err, "chat_id", msg.Chat.ID)
 		h.reply(msg.Chat.ID, "Something went wrong pulling up the quotes. Try again.")
 		return
 	}
 
-	messages := formatAllQuotes(book.Title, quotes)
-	for _, text := range messages {
+	for _, text := range formatAllQuotesGrouped(groups) {
 		h.replyHTML(msg.Chat.ID, text)
 	}
 }
@@ -120,7 +109,7 @@ func (h *Handler) handleBudgetCommand(ctx context.Context, msg *tgbotapi.Message
 	}
 
 	if full {
-		h.reply(msg.Chat.ID, fmt.Sprintf("Today's reading\n\nUnlimited access · %d passages today", count))
+		h.reply(msg.Chat.ID, fmt.Sprintf("Today's reading\n\n∞  Unlimited access\n%d passages analysed today", count))
 		return
 	}
 
@@ -134,7 +123,7 @@ func (h *Handler) handleBudgetCommand(ctx context.Context, msg *tgbotapi.Message
 	if remaining < 0 {
 		remaining = 0
 	}
-	h.reply(msg.Chat.ID, fmt.Sprintf("Today's reading\n\n%d of %d passages analysed\n%d remaining · resets at midnight UTC", count, limit, remaining))
+	h.reply(msg.Chat.ID, formatBudget(count, limit))
 }
 
 func (h *Handler) handleBooksCommand(msg *tgbotapi.Message) {

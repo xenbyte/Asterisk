@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/xenbyte/Asterisk/internal/analysis"
+	"github.com/xenbyte/Asterisk/internal/storage"
 )
 
 func bookSetReply(title, author string) string {
@@ -119,6 +120,78 @@ func formatAllQuotes(title string, quotes []analysis.Quote) []string {
 		messages = append(messages, current.String())
 	}
 
+	return messages
+}
+
+// progressBar returns a 15-block ASCII bar showing filled/total proportion.
+// e.g. progressBar(7, 15) → "███████░░░░░░░░"
+func progressBar(used, total int) string {
+	const barLen = 15
+	if total <= 0 {
+		return strings.Repeat("░", barLen)
+	}
+	filled := used * barLen / total
+	if filled > barLen {
+		filled = barLen
+	}
+	return strings.Repeat("█", filled) + strings.Repeat("░", barLen-filled)
+}
+
+func formatBudget(used, limit int) string {
+	remaining := limit - used
+	if remaining < 0 {
+		remaining = 0
+	}
+	pct := used * 100 / limit
+	bar := progressBar(used, limit)
+	return fmt.Sprintf(
+		"Today's reading\n\n%s %d%%\n%d of %d analyses used · %d remaining\n\nUp to 4 pages per analysis · resets at midnight UTC",
+		bar, pct, used, limit, remaining,
+	)
+}
+
+// formatAllQuotesGrouped renders quotes from all books, one section per book.
+func formatAllQuotesGrouped(groups []storage.BookQuotes) []string {
+	if len(groups) == 0 {
+		return []string{"No quotes collected yet. They accumulate as you analyse pages."}
+	}
+
+	total := 0
+	for _, g := range groups {
+		total += len(g.Quotes)
+	}
+
+	var messages []string
+	var current strings.Builder
+	current.WriteString(fmt.Sprintf("<b>Your Quotes</b>  ·  %d total\n", total))
+
+	for _, g := range groups {
+		bookHeader := fmt.Sprintf("\n\n<b>%s</b>", escapeHTML(g.BookTitle))
+		if g.BookAuthor != "" {
+			bookHeader += fmt.Sprintf(" — <i>%s</i>", escapeHTML(g.BookAuthor))
+		}
+		bookHeader += "\n"
+
+		if current.Len()+len(bookHeader) > maxTelegramMessage {
+			messages = append(messages, strings.TrimRight(current.String(), "\n"))
+			current.Reset()
+		}
+		current.WriteString(bookHeader)
+
+		for _, q := range g.Quotes {
+			entry := fmt.Sprintf("\n\u201c%s\u201d\n<i>%s</i>\n", escapeHTML(q.Text), escapeHTML(q.Note))
+			if current.Len()+len(entry) > maxTelegramMessage {
+				messages = append(messages, strings.TrimRight(current.String(), "\n"))
+				current.Reset()
+				current.WriteString("<b>Quotes (continued)</b>\n")
+			}
+			current.WriteString(entry)
+		}
+	}
+
+	if current.Len() > 0 {
+		messages = append(messages, strings.TrimRight(current.String(), "\n"))
+	}
 	return messages
 }
 

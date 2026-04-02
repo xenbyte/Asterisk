@@ -485,13 +485,12 @@ func (s *Storage) GetRecentSummaries(chatID int64, book *BookContext, limit int)
 	return summaries, nil
 }
 
-// GetAllQuotes is the legacy interface used by commands.go.
+// GetAllQuotes is the legacy interface — kept for compatibility.
 func (s *Storage) GetAllQuotes(chatID int64, book *BookContext) ([]analysis.Quote, error) {
 	records, err := s.GetRecentAnalyses(context.Background(), chatID, BookKey(book.Title, book.Author), 10000)
 	if err != nil {
 		return nil, err
 	}
-
 	var quotes []analysis.Quote
 	for _, r := range records {
 		if r.Response != nil {
@@ -499,6 +498,41 @@ func (s *Storage) GetAllQuotes(chatID int64, book *BookContext) ([]analysis.Quot
 		}
 	}
 	return quotes, nil
+}
+
+// BookQuotes groups quotes from a single book.
+type BookQuotes struct {
+	BookTitle  string
+	BookAuthor string
+	Quotes     []analysis.Quote
+}
+
+// GetAllQuotesForChat returns all quotes across every book analysed in this chat,
+// grouped by book, most recently analysed book first.
+func (s *Storage) GetAllQuotesForChat(ctx context.Context, chatID int64) ([]BookQuotes, error) {
+	books, err := s.ListBooksForChat(ctx, chatID)
+	if err != nil {
+		return nil, err
+	}
+	var result []BookQuotes
+	for _, b := range books {
+		records, err := s.GetRecentAnalyses(ctx, chatID, b.BookKey, 10000)
+		if err != nil {
+			return nil, err
+		}
+		var bq BookQuotes
+		bq.BookTitle = b.Title
+		bq.BookAuthor = b.Author
+		for _, r := range records {
+			if r.Response != nil {
+				bq.Quotes = append(bq.Quotes, r.Response.Quotes...)
+			}
+		}
+		if len(bq.Quotes) > 0 {
+			result = append(result, bq)
+		}
+	}
+	return result, nil
 }
 
 // ListBooksForChat returns all distinct books the chat has analyzed, most recent first.

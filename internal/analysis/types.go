@@ -16,6 +16,36 @@ type Quote struct {
 	Note string `json:"note"`
 }
 
+// UnmarshalJSON handles both the current schema (text/note) and the legacy
+// schema (quote/why_it_matters) that may be stored in the database.
+func (q *Quote) UnmarshalJSON(data []byte) error {
+	type current struct {
+		Text string `json:"text"`
+		Note string `json:"note"`
+	}
+	type legacy struct {
+		Quote        string `json:"quote"`
+		WhyItMatters string `json:"why_it_matters"`
+	}
+	var c current
+	if err := json.Unmarshal(data, &c); err != nil {
+		return err
+	}
+	if c.Text != "" || c.Note != "" {
+		q.Text = c.Text
+		q.Note = c.Note
+		return nil
+	}
+	// Fall back to legacy field names.
+	var l legacy
+	if err := json.Unmarshal(data, &l); err != nil {
+		return err
+	}
+	q.Text = l.Quote
+	q.Note = l.WhyItMatters
+	return nil
+}
+
 type Response struct {
 	Title        string       `json:"title"`
 	PageRange    string       `json:"page_range"`
