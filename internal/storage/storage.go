@@ -127,6 +127,8 @@ func (s *Storage) migrate(ctx context.Context) error {
 		)`,
 		`ALTER TABLE analyses ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE analyses ADD COLUMN IF NOT EXISTS page_range TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS full_access BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
 		`ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_limit INT NULL`,
 	}
 
