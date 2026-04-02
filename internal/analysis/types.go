@@ -18,6 +18,7 @@ type Quote struct {
 
 type Response struct {
 	Title        string       `json:"title"`
+	PageRange    string       `json:"page_range"`
 	Summary      string       `json:"summary"`
 	Vocabulary   []VocabEntry `json:"vocabulary"`
 	Quotes       []Quote      `json:"quotes"`

@@ -3,11 +3,31 @@ package telegram
 import (
 	"context"
 	"fmt"
-	"strings"
 	"strconv"
+	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/xenbyte/Asterisk/internal/storage"
 )
+
+// analysisButtonLabel builds the inline button label for an analysis entry.
+// Format: "p.47–49 · Title" when page range is known, "2 Apr · Title" otherwise.
+func analysisButtonLabel(m storage.AnalysisMeta) string {
+	title := m.Title
+	if title == "" {
+		title = "—"
+	}
+	var label string
+	if m.PageRange != "" {
+		label = fmt.Sprintf("p.%s · %s", m.PageRange, title)
+	} else {
+		label = fmt.Sprintf("%s · %s", m.CreatedAt.Format("2 Jan"), title)
+	}
+	if len(label) > 60 {
+		label = label[:57] + "..."
+	}
+	return label
+}
 
 // isLibraryCallback returns true if the callback data belongs to the library navigation system.
 func isLibraryCallback(data string) bool {
@@ -183,15 +203,7 @@ func (h *Handler) editToBookView(chatID int64, msgID int, analysisID int64) {
 
 	var rows [][]tgbotapi.InlineKeyboardButton
 	for _, m := range metas {
-		label := m.Title
-		if label == "" {
-			label = m.CreatedAt.Format("2 Jan 2006")
-		} else {
-			label = fmt.Sprintf("%s · %s", m.Title, m.CreatedAt.Format("2 Jan"))
-			if len(label) > 60 {
-				label = label[:57] + "..."
-			}
-		}
+		label := analysisButtonLabel(m)
 		cbData := fmt.Sprintf("an:%d", m.ID)
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(label, cbData),
@@ -221,14 +233,26 @@ func (h *Handler) editToAnalysisView(chatID int64, msgID int, analysisID int64) 
 	if detail.BookAuthor != "" {
 		bookLabel = fmt.Sprintf("%s — %s", detail.BookTitle, detail.BookAuthor)
 	}
+
+	// Build subheader: "p.47–49 · Eliot · 2 Apr" or "Eliot · 2 Apr" if no page range.
 	date := detail.CreatedAt.Format("2 Jan 2006")
+	pageRange := ""
+	if detail.Data.Response != nil {
+		pageRange = detail.Data.Response.PageRange
+	}
+	var subheader string
+	if pageRange != "" {
+		subheader = fmt.Sprintf("p.%s · %s · %s", pageRange, bookLabel, date)
+	} else {
+		subheader = fmt.Sprintf("%s · %s", bookLabel, date)
+	}
 
 	summary := ""
 	if detail.Data.Response != nil {
 		summary = detail.Data.Response.Summary
 	}
 
-	text := fmt.Sprintf("%s\n%s · %s\n\n%s", detail.Title, bookLabel, date, summary)
+	text := fmt.Sprintf("%s\n%s\n\n%s", detail.Title, subheader, summary)
 
 	idStr := strconv.FormatInt(analysisID, 10)
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(

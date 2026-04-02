@@ -52,6 +52,7 @@ type BookSummary struct {
 type AnalysisMeta struct {
 	ID        int64
 	Title     string
+	PageRange string
 	CreatedAt time.Time
 }
 
@@ -125,6 +126,7 @@ func (s *Storage) migrate(ctx context.Context) error {
 			data JSONB NOT NULL
 		)`,
 		`ALTER TABLE analyses ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE analyses ADD COLUMN IF NOT EXISTS page_range TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_limit INT NULL`,
 	}
 
@@ -434,15 +436,15 @@ func (s *Storage) GetRecentAnalyses(ctx context.Context, chatID int64, bookKey s
 	return records, nil
 }
 
-// SaveAnalysis persists an AnalysisRecord for the given chat, book, and passage title.
-func (s *Storage) SaveAnalysis(ctx context.Context, chatID int64, bookKey string, title string, record AnalysisRecord) error {
+// SaveAnalysis persists an AnalysisRecord for the given chat, book, passage title, and page range.
+func (s *Storage) SaveAnalysis(ctx context.Context, chatID int64, bookKey string, title string, pageRange string, record AnalysisRecord) error {
 	data, err := json.Marshal(record)
 	if err != nil {
 		return fmt.Errorf("marshaling analysis: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO analyses (chat_id, book_key, title, created_at, data) VALUES ($1, $2, $3, NOW(), $4)`,
-		chatID, bookKey, title, data,
+		`INSERT INTO analyses (chat_id, book_key, title, page_range, created_at, data) VALUES ($1, $2, $3, $4, NOW(), $5)`,
+		chatID, bookKey, title, pageRange, data,
 	)
 	if err != nil {
 		return fmt.Errorf("saving analysis: %w", err)
@@ -452,13 +454,17 @@ func (s *Storage) SaveAnalysis(ctx context.Context, chatID int64, bookKey string
 
 // StoreAnalysis is the legacy interface used by photo.go.
 func (s *Storage) StoreAnalysis(chatID int64, book *BookContext, title string, resp *analysis.Response) error {
+	pageRange := ""
+	if resp != nil {
+		pageRange = resp.PageRange
+	}
 	record := AnalysisRecord{
 		Timestamp: time.Now(),
 		BookTitle: book.Title,
 		Author:    book.Author,
 		Response:  resp,
 	}
-	return s.SaveAnalysis(context.Background(), chatID, BookKey(book.Title, book.Author), title, record)
+	return s.SaveAnalysis(context.Background(), chatID, BookKey(book.Title, book.Author), title, pageRange, record)
 }
 
 // GetRecentSummaries is the legacy interface used by photo.go.
@@ -531,7 +537,7 @@ func (s *Storage) ListBooksForChat(ctx context.Context, chatID int64) ([]BookSum
 // ListAnalysesForBook returns analyses for a specific book, most recent first.
 func (s *Storage) ListAnalysesForBook(ctx context.Context, chatID int64, bookKey string) ([]AnalysisMeta, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, title, created_at FROM analyses
+		`SELECT id, title, page_range, created_at FROM analyses
 		 WHERE chat_id = $1 AND book_key = $2
 		 ORDER BY created_at DESC
 		 LIMIT 10`,
@@ -545,7 +551,7 @@ func (s *Storage) ListAnalysesForBook(ctx context.Context, chatID int64, bookKey
 	var metas []AnalysisMeta
 	for rows.Next() {
 		var m AnalysisMeta
-		if err := rows.Scan(&m.ID, &m.Title, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Title, &m.PageRange, &m.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scanning analysis meta: %w", err)
 		}
 		metas = append(metas, m)

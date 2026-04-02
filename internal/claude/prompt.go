@@ -29,7 +29,7 @@ The reader is currently working through "{{.BookTitle}}" by {{.Author}}.
 You are looking at one or more photos of pages from this book. If multiple images are provided, they are consecutive pages — treat them as a single continuous passage.
 
 Instructions:
-1. Read all pages carefully. Note page numbers mentally but do not include them as separate fields.
+1. Read all pages carefully. Note any page numbers visible in headers, footers, or running heads — they go in the page_range field.
 2. Assess image quality. If any image is too blurry, cut off, or otherwise unreadable to give a meaningful analysis, set image_quality to "retry" and leave all other fields as empty strings or empty arrays. Do not attempt partial analysis on poor images.
 3. If the images are readable, produce a single unified structured analysis covering all pages together.
 
@@ -37,6 +37,7 @@ Respond ONLY with valid JSON matching this exact schema. No markdown fences. No 
 
 {
   "title": "4–7 word evocative title for this passage, like a scholar naming a chapter. Not descriptive — evocative. 'The Weight of Misremembering' not 'Character recalls past event'. 'God and the Geometry of Doubt' not 'Discussion of religion'.",
+  "page_range": "Page number or range visible in the images, e.g. '47' or '47–49'. Use an en dash for ranges. Empty string if no page numbers are visible.",
   "summary": "What happens or is argued on these pages. Specific, concrete — names, events, ideas. No vague thematic gestures. 3–5 sentences. Written in your voice, not an academic register.",
   "vocabulary": [
     {
