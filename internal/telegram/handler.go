@@ -55,7 +55,11 @@ func (h *Handler) HandleUpdate(update tgbotapi.Update) {
 
 	switch {
 	case update.CallbackQuery != nil:
-		h.handleCallback(update.CallbackQuery)
+		if isLibraryCallback(update.CallbackQuery.Data) {
+			h.handleLibraryCallback(update.CallbackQuery)
+		} else {
+			h.handleCallback(update.CallbackQuery)
+		}
 	case update.Message == nil:
 		return
 	case isAdminCommand(update.Message):

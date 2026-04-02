@@ -37,22 +37,20 @@ func stripMarkdownFences(s string) string {
 }
 
 func validate(r *Response) error {
-	if r.Summary == "" {
-		return fmt.Errorf("missing required field: summary")
-	}
 	if r.ImageQuality != "ok" && r.ImageQuality != "retry" {
 		return fmt.Errorf("image_quality must be \"ok\" or \"retry\", got %q", r.ImageQuality)
 	}
-	if r.ImageQuality == "ok" {
-		if r.Vocabulary == nil {
-			return fmt.Errorf("missing required field: vocabulary")
-		}
-		if r.Quotes == nil {
-			return fmt.Errorf("missing required field: quotes")
-		}
-		if r.Missed == nil {
-			return fmt.Errorf("missing required field: missed")
-		}
+	if r.ImageQuality == "retry" {
+		return nil
+	}
+	if r.Summary == "" {
+		return fmt.Errorf("missing required field: summary")
+	}
+	if r.Vocabulary == nil {
+		return fmt.Errorf("missing required field: vocabulary")
+	}
+	if r.Quotes == nil {
+		return fmt.Errorf("missing required field: quotes")
 	}
 	return nil
 }

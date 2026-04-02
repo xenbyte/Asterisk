@@ -38,6 +38,34 @@ type User struct {
 	FirstSeen  time.Time
 }
 
+// BookSummary summarises a book a chat has read.
+type BookSummary struct {
+	BookKey          string
+	Title            string
+	Author           string
+	Count            int
+	LastSeenAt       time.Time
+	LatestAnalysisID int64
+}
+
+// AnalysisMeta is a lightweight summary of a single analysis.
+type AnalysisMeta struct {
+	ID        int64
+	Title     string
+	CreatedAt time.Time
+}
+
+// AnalysisDetail holds the full data for a single analysis.
+type AnalysisDetail struct {
+	ID         int64
+	Title      string
+	BookKey    string
+	BookTitle  string
+	BookAuthor string
+	CreatedAt  time.Time
+	Data       AnalysisRecord
+}
+
 // Storage wraps a PostgreSQL connection pool.
 type Storage struct {
 	db *sql.DB
@@ -96,6 +124,8 @@ func (s *Storage) migrate(ctx context.Context) error {
 			key  TEXT PRIMARY KEY,
 			data JSONB NOT NULL
 		)`,
+		`ALTER TABLE analyses ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_limit INT NULL`,
 	}
 
 	for _, m := range migrations {
@@ -213,17 +243,63 @@ func (s *Storage) RevokeFullAccess(ctx context.Context, telegramID int64) error 
 	return nil
 }
 
-// UserWithCount extends User with today's usage count.
+// GetEffectiveLimit returns the user's daily analysis limit.
+// If the user has a custom limit set, that is returned. Otherwise 15.
+func (s *Storage) GetEffectiveLimit(ctx context.Context, userID int64) (int, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT daily_limit FROM users WHERE telegram_id=$1`,
+		userID,
+	)
+	var limit sql.NullInt64
+	if err := row.Scan(&limit); err != nil {
+		if err == sql.ErrNoRows {
+			return 15, nil
+		}
+		return 15, fmt.Errorf("getting effective limit: %w", err)
+	}
+	if limit.Valid {
+		return int(limit.Int64), nil
+	}
+	return 15, nil
+}
+
+// SetUserLimit sets a custom daily limit for a user.
+// Pass limit=0 to reset to the default (NULL in the database).
+func (s *Storage) SetUserLimit(ctx context.Context, userID int64, limit int) error {
+	if limit == 0 {
+		_, err := s.db.ExecContext(ctx,
+			`UPDATE users SET daily_limit=NULL WHERE telegram_id=$1`,
+			userID,
+		)
+		if err != nil {
+			return fmt.Errorf("resetting user limit: %w", err)
+		}
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO users(telegram_id, daily_limit) VALUES($1, $2)
+		 ON CONFLICT (telegram_id) DO UPDATE SET daily_limit=$2`,
+		userID, limit,
+	)
+	if err != nil {
+		return fmt.Errorf("setting user limit: %w", err)
+	}
+	return nil
+}
+
+// UserWithCount extends User with today's usage count and optional custom limit.
 type UserWithCount struct {
 	User
 	DailyCount int
+	DailyLimit *int // nil = using default (15)
 }
 
 // ListUsersWithCount returns all known users joined with today's rate limit count.
 func (s *Storage) ListUsersWithCount(ctx context.Context) ([]UserWithCount, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT u.telegram_id, u.username, u.first_name, u.full_access, u.first_seen,
-		        COALESCE(r.count, 0) as daily_count
+		        COALESCE(r.count, 0) as daily_count,
+		        u.daily_limit
 		 FROM users u
 		 LEFT JOIN rate_limits r ON r.user_id = u.telegram_id AND r.date = CURRENT_DATE
 		 ORDER BY u.first_seen DESC`,
@@ -236,8 +312,13 @@ func (s *Storage) ListUsersWithCount(ctx context.Context) ([]UserWithCount, erro
 	var users []UserWithCount
 	for rows.Next() {
 		var u UserWithCount
-		if err := rows.Scan(&u.TelegramID, &u.Username, &u.FirstName, &u.FullAccess, &u.FirstSeen, &u.DailyCount); err != nil {
+		var dailyLimit sql.NullInt64
+		if err := rows.Scan(&u.TelegramID, &u.Username, &u.FirstName, &u.FullAccess, &u.FirstSeen, &u.DailyCount, &dailyLimit); err != nil {
 			return nil, fmt.Errorf("scanning user: %w", err)
+		}
+		if dailyLimit.Valid {
+			v := int(dailyLimit.Int64)
+			u.DailyLimit = &v
 		}
 		users = append(users, u)
 	}
@@ -353,15 +434,15 @@ func (s *Storage) GetRecentAnalyses(ctx context.Context, chatID int64, bookKey s
 	return records, nil
 }
 
-// SaveAnalysis persists an AnalysisRecord for the given chat and book.
-func (s *Storage) SaveAnalysis(ctx context.Context, chatID int64, bookKey string, record AnalysisRecord) error {
+// SaveAnalysis persists an AnalysisRecord for the given chat, book, and passage title.
+func (s *Storage) SaveAnalysis(ctx context.Context, chatID int64, bookKey string, title string, record AnalysisRecord) error {
 	data, err := json.Marshal(record)
 	if err != nil {
 		return fmt.Errorf("marshaling analysis: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO analyses (chat_id, book_key, created_at, data) VALUES ($1, $2, NOW(), $3)`,
-		chatID, bookKey, data,
+		`INSERT INTO analyses (chat_id, book_key, title, created_at, data) VALUES ($1, $2, $3, NOW(), $4)`,
+		chatID, bookKey, title, data,
 	)
 	if err != nil {
 		return fmt.Errorf("saving analysis: %w", err)
@@ -370,14 +451,14 @@ func (s *Storage) SaveAnalysis(ctx context.Context, chatID int64, bookKey string
 }
 
 // StoreAnalysis is the legacy interface used by photo.go.
-func (s *Storage) StoreAnalysis(chatID int64, book *BookContext, resp *analysis.Response) error {
+func (s *Storage) StoreAnalysis(chatID int64, book *BookContext, title string, resp *analysis.Response) error {
 	record := AnalysisRecord{
 		Timestamp: time.Now(),
 		BookTitle: book.Title,
 		Author:    book.Author,
 		Response:  resp,
 	}
-	return s.SaveAnalysis(context.Background(), chatID, BookKey(book.Title, book.Author), record)
+	return s.SaveAnalysis(context.Background(), chatID, BookKey(book.Title, book.Author), title, record)
 }
 
 // GetRecentSummaries is the legacy interface used by photo.go.
@@ -399,19 +480,104 @@ func (s *Storage) GetRecentSummaries(chatID int64, book *BookContext, limit int)
 }
 
 // GetAllQuotes is the legacy interface used by commands.go.
-func (s *Storage) GetAllQuotes(chatID int64, book *BookContext) ([]analysis.QuoteEntry, error) {
+func (s *Storage) GetAllQuotes(chatID int64, book *BookContext) ([]analysis.Quote, error) {
 	records, err := s.GetRecentAnalyses(context.Background(), chatID, BookKey(book.Title, book.Author), 10000)
 	if err != nil {
 		return nil, err
 	}
 
-	var quotes []analysis.QuoteEntry
+	var quotes []analysis.Quote
 	for _, r := range records {
 		if r.Response != nil {
 			quotes = append(quotes, r.Response.Quotes...)
 		}
 	}
 	return quotes, nil
+}
+
+// ListBooksForChat returns all distinct books the chat has analyzed, most recent first.
+func (s *Storage) ListBooksForChat(ctx context.Context, chatID int64) ([]BookSummary, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT a.book_key,
+		        COALESCE(s.book_title, a.book_key) as book_title,
+		        COALESCE(s.book_author, '') as book_author,
+		        COUNT(a.id) as cnt,
+		        MAX(a.created_at) as last_seen,
+		        MAX(a.id) as latest_id
+		 FROM analyses a
+		 LEFT JOIN sessions s ON s.chat_id = a.chat_id
+		   AND lower(s.book_title || '::' || s.book_author) = a.book_key
+		 WHERE a.chat_id = $1
+		 GROUP BY a.book_key, s.book_title, s.book_author
+		 ORDER BY last_seen DESC`,
+		chatID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing books for chat: %w", err)
+	}
+	defer rows.Close()
+
+	var books []BookSummary
+	for rows.Next() {
+		var b BookSummary
+		if err := rows.Scan(&b.BookKey, &b.Title, &b.Author, &b.Count, &b.LastSeenAt, &b.LatestAnalysisID); err != nil {
+			return nil, fmt.Errorf("scanning book summary: %w", err)
+		}
+		books = append(books, b)
+	}
+	return books, rows.Err()
+}
+
+// ListAnalysesForBook returns analyses for a specific book, most recent first.
+func (s *Storage) ListAnalysesForBook(ctx context.Context, chatID int64, bookKey string) ([]AnalysisMeta, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, title, created_at FROM analyses
+		 WHERE chat_id = $1 AND book_key = $2
+		 ORDER BY created_at DESC
+		 LIMIT 10`,
+		chatID, bookKey,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing analyses for book: %w", err)
+	}
+	defer rows.Close()
+
+	var metas []AnalysisMeta
+	for rows.Next() {
+		var m AnalysisMeta
+		if err := rows.Scan(&m.ID, &m.Title, &m.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scanning analysis meta: %w", err)
+		}
+		metas = append(metas, m)
+	}
+	return metas, rows.Err()
+}
+
+// GetAnalysisDetail returns full analysis data by ID.
+func (s *Storage) GetAnalysisDetail(ctx context.Context, id int64) (*AnalysisDetail, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT a.id, a.title, a.book_key, a.created_at, a.data,
+		        COALESCE(s.book_title, a.book_key) as book_title,
+		        COALESCE(s.book_author, '') as book_author
+		 FROM analyses a
+		 LEFT JOIN sessions s ON s.chat_id = a.chat_id
+		   AND lower(s.book_title || '::' || s.book_author) = a.book_key
+		 WHERE a.id = $1`,
+		id,
+	)
+
+	var d AnalysisDetail
+	var raw json.RawMessage
+	if err := row.Scan(&d.ID, &d.Title, &d.BookKey, &d.CreatedAt, &raw, &d.BookTitle, &d.BookAuthor); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("getting analysis detail: %w", err)
+	}
+	if err := json.Unmarshal(raw, &d.Data); err != nil {
+		return nil, fmt.Errorf("unmarshaling analysis data: %w", err)
+	}
+	return &d, nil
 }
 
 // --- Callbacks ---

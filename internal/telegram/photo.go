@@ -10,8 +10,6 @@ import (
 	"github.com/xenbyte/Asterisk/internal/storage"
 )
 
-const defaultDailyLimit = 15
-
 func (h *Handler) handlePhotoGroup(chatID int64, msgs []*tgbotapi.Message) {
 	book, err := h.storage.GetBook(chatID)
 	if err != nil {
@@ -47,11 +45,16 @@ func (h *Handler) handlePhotoGroup(chatID int64, msgs []*tgbotapi.Message) {
 			if err != nil {
 				h.logger.Error("failed to get daily count", "user_id", userID, "error", err)
 				// proceed without blocking on error
-			} else if count >= defaultDailyLimit {
-				h.sendMessage(chatID, fmt.Sprintf(
-					"You've reached your daily limit of %d analyses. Your quota resets at midnight UTC.", defaultDailyLimit,
-				))
-				return
+			} else {
+				limit, err := h.storage.GetEffectiveLimit(ctx, userID)
+				if err != nil {
+					h.logger.Error("failed to get effective limit", "user_id", userID, "error", err)
+					limit = 15
+				}
+				if count >= limit {
+					h.sendMessage(chatID, rateLimitReply)
+					return
+				}
 			}
 		}
 	}
@@ -76,6 +79,10 @@ func (h *Handler) handlePhotoGroup(chatID int64, msgs []*tgbotapi.Message) {
 		previousSummaries = nil
 	}
 
+	// Send typing indicator before the Claude call.
+	chatAction := tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)
+	h.bot.Send(chatAction)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
@@ -95,7 +102,7 @@ func (h *Handler) handlePhotoGroup(chatID int64, msgs []*tgbotapi.Message) {
 		return
 	}
 
-	if err := h.storage.StoreAnalysis(chatID, book, resp); err != nil {
+	if err := h.storage.StoreAnalysis(chatID, book, resp.Title, resp); err != nil {
 		h.logger.Error("failed to persist analysis", "error", err, "chat_id", chatID)
 	}
 
@@ -106,7 +113,7 @@ func (h *Handler) handlePhotoGroup(chatID int64, msgs []*tgbotapi.Message) {
 		}
 	}
 
-	sentMsg, err := h.sendSummaryWithButtons(chatID, resp.Summary)
+	sentMsg, err := h.sendSummaryWithButtons(chatID, resp.Title, resp.Summary)
 	if err != nil {
 		h.logger.Error("failed to send summary", "error", err, "chat_id", chatID)
 		return
@@ -118,16 +125,18 @@ func (h *Handler) handlePhotoGroup(chatID int64, msgs []*tgbotapi.Message) {
 	}
 }
 
-func (h *Handler) sendSummaryWithButtons(chatID int64, summary string) (tgbotapi.Message, error) {
-	msg := tgbotapi.NewMessage(chatID, summary)
+func (h *Handler) sendSummaryWithButtons(chatID int64, title, summary string) (tgbotapi.Message, error) {
+	text := fmt.Sprintf("<b>%s</b>\n\n%s", escapeHTML(title), escapeHTML(summary))
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = tgbotapi.ModeHTML
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("📖 Vocab", "vocab"),
-			tgbotapi.NewInlineKeyboardButtonData("💬 Quotes", "quotes"),
+			tgbotapi.NewInlineKeyboardButtonData("Vocab", "vocab"),
+			tgbotapi.NewInlineKeyboardButtonData("Quotes", "quotes"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🔗 Connections", "connections"),
-			tgbotapi.NewInlineKeyboardButtonData("🔍 What I Missed", "missed"),
+			tgbotapi.NewInlineKeyboardButtonData("Connections", "connections"),
+			tgbotapi.NewInlineKeyboardButtonData("What I Missed", "missed"),
 		),
 	)
 
